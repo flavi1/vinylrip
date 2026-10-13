@@ -1,0 +1,19 @@
+# ~/.config/vinylrip/config.toml : tout est facultatif.
+device = "Device"                 # id de carte ALSA, nom, ou vendor:product
+# quality = "192000:S32_LE:2"     # vide = la meilleure qualité proposée par la carte
+
+[identification]
+identify_mode = "auto"            # auto | manual | off
+acoustid_key = ""                 # clé d'application AcoustID (gratuite)
+contact = ""                      # e-mail ou URL placé dans le User-Agent MusicBrainz
+
+[output]
+# music_root = "~/Musique"        # vide = xdg-user-dir MUSIC
+template = "{artiste_album}/{annee} - {album}/{piste:02d}. {titre}.flac"
+multidisc_template = "{artiste_album}/{annee} - {album}/CD{disque}/{piste:02d}. {titre}.flac"
+# output_rate = 96000             # version réduite : 0 = identique à la capture
+# output_bits = 24                # 16 ou 24
+delete_raw = true                 # seulement si tout est vérifié
+delete_master_after_reduce = false
+embed_cover = true
+cover_file = true
