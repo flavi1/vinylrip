@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Command line: ``vinylrip devices | record | process | cuts | name | play``."""
+"""Command line: ``vinylrip devices | session | record | process | cuts | name | play``."""
 from __future__ import annotations
 
 import argparse
@@ -52,6 +52,18 @@ def _resolve_quality(settings: Settings, card, wanted: str | None) -> Quality:
 
 
 def cmd_devices(args, settings) -> int:
+    if args.json:
+        out = []
+        for c in list_capture_cards():
+            entry = {"id": c.card_id, "name": c.name, "hw": c.hw, "usb_id": c.usb_id, "qualities": []}
+            if args.qualities:
+                try:
+                    entry["qualities"] = [{"key": q.key(), "label": q.label} for q in quality_options(probe_hw_params(c))]
+                except RuntimeError as exc:
+                    entry["error"] = str(exc)
+            out.append(entry)
+        print(json.dumps({"cards": out}, ensure_ascii=False))
+        return 0
     for c in list_capture_cards():
         print(f"{c.card_id}\t{c.name}\t{c.hw}\tusb={c.usb_id or '-'}")
         if args.qualities:
@@ -166,10 +178,52 @@ def cmd_listen(args, settings) -> int:
     q = _resolve_quality(settings, card, args.quality)
     rec, play = listen_pipe(card, q, settings.listen_device or None)
     try:
-        input("Listening. Press Enter to stop… ")
+        input("" if args.json else "Listening. Press Enter (or close stdin) to stop… ")
+    except EOFError:
+        pass
     finally:
         rec.terminate()
         play.terminate()
+    return 0
+
+
+def cmd_session(args, settings) -> int:
+    import queue
+    import threading
+
+    from .session import Session
+
+    def emit(event: dict) -> None:
+        print(json.dumps(event, ensure_ascii=False), flush=True)
+
+    try:
+        card = _resolve_card(settings, args.device)
+        quality = _resolve_quality(settings, card, args.quality)
+    except (CaptureError, RuntimeError) as exc:
+        emit({"event": "error", "message": str(exc), "kept": None})
+        return 1
+    commands: "queue.Queue" = queue.Queue()
+
+    def reader():
+        for line in sys.stdin:
+            line = line.strip()
+            if line:
+                try:
+                    commands.put(json.loads(line))
+                except json.JSONDecodeError:
+                    emit({"event": "error", "message": f"invalid JSON: {line[:80]}", "kept": None})
+        commands.put(None)
+
+    threading.Thread(target=reader, daemon=True).start()
+    session = Session(settings, card, quality, args.discs, emit, commands.get, _identifier(settings))
+    if not session.open():
+        return 1
+    while not session.finished:
+        cmd = commands.get()
+        if cmd is None:
+            session.close()
+            break
+        session.handle(cmd)
     return 0
 
 
@@ -211,6 +265,12 @@ def build_parser() -> argparse.ArgumentParser:
     pl = sub.add_parser("play", help="play a raw recording with aplay")
     pl.add_argument("file")
     pl.set_defaults(fn=cmd_play)
+
+    se = sub.add_parser("session", help="JSON-lines recording session (used by the Kodi plugin)")
+    se.add_argument("--device")
+    se.add_argument("--quality")
+    se.add_argument("--discs", type=int, default=1)
+    se.set_defaults(fn=cmd_session)
 
     ls = sub.add_parser("listen", help="listen to the turntable without recording")
     ls.add_argument("--device")

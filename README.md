@@ -101,3 +101,10 @@ ffmpeg. Aucun accès réseau ni matériel n'est nécessaire.
 ## Licence
 
 GPL-3.0-or-later. Voir `LICENSE`.
+
+## Session pilotée par un autre programme
+
+`vinylrip --json session [--device hw:…] [--quality 192000:S32_LE:2] [--discs N]` ouvre une session
+d'enregistrement pilotée en JSON-lignes (commandes sur stdin, événements sur stdout) ; c'est
+l'interface utilisée par le plugin Kodi. Voir `src/vinylrip/session.py` pour le protocole.
+`vinylrip --json devices --qualities` liste les cartes et les qualités proposées.
