@@ -76,3 +76,16 @@ class DeviceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FrenchLocaleTest(unittest.TestCase):
+    def test_arecord_l_in_french(self):
+        text = ("**** Liste des périphériques matériels CAPTURE **** \n"
+                "carte 1 : Mic8k [ZY Control Mic8k], périphérique 0 : USB Audio [USB Audio] \n"
+                "  Sous-périphériques : 1/1 \n"
+                "carte 3 : PSHX500 [PS-HX500], périphérique 0 : USB Audio [USB Audio] \n")
+        from vinylrip.devices import parse_arecord_l, find_card
+        cards = parse_arecord_l(text)
+        self.assertEqual([c.card_id for c in cards], ["Mic8k", "PSHX500"])
+        self.assertEqual(find_card(cards, "PSHX500").index, 3)
+        self.assertEqual(find_card(cards, "ps-hx500").card_id, "PSHX500")

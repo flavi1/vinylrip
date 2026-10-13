@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import os
 import subprocess
 from dataclasses import dataclass, field
 
@@ -62,7 +63,7 @@ class HwParams:
 
 
 _CARD_RE = re.compile(
-    r"^card\s+(\d+):\s*(\S+)\s*\[(.*?)\],\s*device\s+(\d+):", re.M
+    r"^(?:card|carte)\s+(\d+)\s*:\s*(\S+)\s*\[(.*?)\],\s*(?:device|p\w+riph\w+rique)\s+(\d+)\s*:", re.M | re.I
 )
 
 
@@ -151,7 +152,8 @@ def probe_hw_params(card: Card, runner=None) -> HwParams:
 
 def _run(cmd: list[str]) -> str:
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=20,
+                             env=dict(os.environ, LC_ALL="C"))
     except FileNotFoundError as exc:
         raise RuntimeError(f"{cmd[0]} not found") from exc
     except subprocess.TimeoutExpired as exc:

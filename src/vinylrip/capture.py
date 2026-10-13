@@ -71,6 +71,7 @@ class Recorder:
         os.makedirs(os.path.dirname(os.path.abspath(self.out_path)), exist_ok=True)
         try:
             self._proc = self._popen(self.cmd, stdout=subprocess.DEVNULL,
+                                     env=dict(os.environ, LC_ALL="C"),
                                      stderr=subprocess.PIPE, text=True)
         except FileNotFoundError as exc:
             raise CaptureError(f"{self.cmd[0]} not found") from exc
