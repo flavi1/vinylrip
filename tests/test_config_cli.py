@@ -114,8 +114,13 @@ class CliTests(unittest.TestCase):
         raw = os.path.join(job.dir, "face_a.pcm")
         write_raw(raw, three_track_face(8000)[0][:2000], 8000, "S16_LE")   # 0.25 s: too short to analyse
         job.add_face("A", raw, 1)
-        code, _, err = run(["process", job.dir])
-        self.assertEqual(code, 1)          # ValueError("recording too short") is reported cleanly
+        with mock.patch.dict(os.environ, {"LC_ALL": "C", "LANG": "C"}):
+            code, _, err = run(["process", job.dir])
+        self.assertEqual(code, 2)          # ValueError("recording too short"): explained, with how to resume
+        self.assertIn("recording too short", err)
+        self.assertIn(f"vinylrip process {job.dir}", err)
+        self.assertIn("Audacity", err)
+        self.assertIn("Signed 16-bit PCM", err)
         self.assertTrue(os.path.exists(raw))
 
     def test_parser_requires_a_command(self):

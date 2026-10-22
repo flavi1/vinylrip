@@ -69,6 +69,25 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(self.names()[1:], ["error"] * 3)
         self.assertFalse(self.s.finished)
 
+    def test_processing_error_explains_how_to_resume(self):
+        from vinylrip.job import ProcessError
+
+        def boom(job, *a):
+            raise ProcessError("flac exploded", "encode", ["/tmp/.vinylrip-x"])
+        self.s.process_fn = boom
+        self.s.open()
+        self.s.handle({"cmd": "start_face"})
+        self.s.handle({"cmd": "stop_face"})
+        self.s.handle({"cmd": "finish"})
+        err = self.events[-1]
+        self.assertEqual((err["event"], err["stage"]), ("error", "encode"))
+        self.assertIn("/tmp/.vinylrip-x", err["help"])
+        self.assertEqual(err["resume"], f"vinylrip process {self.s.job.dir}")
+        # Commande refusée : pas d'étape, pas d'explication de reprise.
+        self.s.handle({"cmd": "stop_face"})
+        self.assertIsNone(self.events[-1]["stage"])
+        self.assertNotIn("help", self.events[-1])
+
     def test_cancel_delete_and_keep(self):
         self.s.open()
         self.s.handle({"cmd": "start_face"})

@@ -5,6 +5,9 @@ Commands (one JSON object per line on stdin)::
 
     {"cmd": "start_face"}                  start recording the next face
     {"cmd": "listen", "on": true}          play the recording while it runs (aplay)
+    {"cmd": "listen", "on": true, "http": true}
+                                           …or serve it as a WAV stream on 127.0.0.1; the
+                                           ``listening`` event then carries its ``url``
     {"cmd": "stop_face"}                   stop the current face and keep it
     {"cmd": "cancel", "delete": true}      abort; delete or keep what was recorded
     {"cmd": "finish"}                      process everything (split, identify, encode…)
@@ -12,6 +15,12 @@ Commands (one JSON object per line on stdin)::
 
 Events (one JSON object per line on stdout) carry an ``event`` key: ``ready``, ``recording``,
 ``face_done``, ``listening``, ``stage``, ``choose_release``, ``done``, ``cancelled``, ``error``.
+
+An ``error`` event that interrupted work carries ``stage`` (``open``, ``record``, ``split``,
+``identify``, ``encode``, ``verify``, ``convert``, ``archive``, ``file``), ``help`` (what was
+kept, how to resume, how to finish by hand; in French or English after ``LANG``) and
+``resume`` (the command that resumes the job). ``done`` carries ``help`` when something
+still needs checking.
 """
 from __future__ import annotations
 
@@ -23,6 +32,7 @@ from .config import Settings
 from .devices import Card, Quality
 from .job import FACE_LETTERS, Job, ProcessError, process
 from .pcm import PCMParams
+from .recovery import attention_text, help_text
 
 
 class Session:
@@ -48,7 +58,8 @@ class Session:
             check_free_space(self.settings.work_dir, need)
             self.job = Job.create(self.settings.work_dir, self.params, self.discs)
         except (CaptureError, OSError) as exc:
-            self.emit({"event": "error", "message": str(exc), "kept": None})
+            self.emit({"event": "error", "message": str(exc), "kept": None, "stage": "open",
+                       "help": help_text("open", None, message=str(exc))})
             return False
         self.emit({"event": "ready", "job": self.job.dir, "quality": self.quality.label,
                    "device": self.card.hw, "discs": self.discs})
@@ -62,9 +73,21 @@ class Session:
             return
         try:
             fn(cmd)
-        except (CaptureError, ProcessError, ValueError, OSError, RuntimeError) as exc:
+        except ProcessError as exc:
             self._stop_player()
-            self.emit({"event": "error", "message": str(exc), "kept": self._kept()})
+            self.emit(self._error(exc, exc.stage, exc.kept))
+        except (CaptureError, ValueError, OSError, RuntimeError) as exc:
+            self._stop_player()
+            # Commande refusée (« nothing was recorded »…) : pas d'étape en échec.
+            stage = "record" if (self._rec is not None or name == "start_face") and isinstance(exc, (CaptureError, OSError)) else None
+            self.emit(self._error(exc, stage, []))
+
+    def _error(self, exc: Exception, stage: str | None, kept: list[str]) -> dict:
+        ev = {"event": "error", "message": str(exc), "kept": self._kept(), "stage": stage}
+        if stage:
+            ev["help"] = help_text(stage, self.job, kept, str(exc))
+            ev["resume"] = f"vinylrip process {self.job.dir}" if self.job else None
+        return ev
 
     def close(self) -> None:
         """Stdin closed: never lose a running recording."""
@@ -89,17 +112,25 @@ class Session:
         self._rec, self._current = rec, (label, raw, disc)
         self.emit({"event": "recording", "face": label, "disc": disc, "path": raw})
         if cmd.get("listen"):
-            self._cmd_listen({"on": True})
+            self._cmd_listen({"on": True, "http": cmd.get("http", False)})
 
     def _cmd_listen(self, cmd: dict) -> None:
         if cmd.get("on", True):
             if self._rec is None:
                 raise CaptureError("nothing is being recorded")
             if self._player is None:
-                self._player = self.player_cls(self._current[1], self.params,
-                                               self.settings.listen_device or None, self.settings.listen_delay_s)
+                if cmd.get("http"):
+                    from .stream import FollowSource, WavServer
+                    self._player = WavServer(FollowSource(self._current[1], self.params,
+                                                          self.settings.listen_delay_s), self.params)
+                else:
+                    self._player = self.player_cls(self._current[1], self.params,
+                                                   self.settings.listen_device or None, self.settings.listen_delay_s)
                 self._player.start()
-            self.emit({"event": "listening", "on": True})
+            ev = {"event": "listening", "on": True}
+            if getattr(self._player, "url", None):
+                ev["url"] = self._player.url
+            self.emit(ev)
         else:
             self._stop_player()
             self.emit({"event": "listening", "on": False})
@@ -143,7 +174,8 @@ class Session:
         res = self.process_fn(self.job, self.settings, self.identifier, self._choose, self.cover_fetch,
                                   lambda e: self.emit({"event": "stage", **e}))
         self.finished = True
-        self.emit({"event": "done", **res})
+        note = attention_text(res, self.job)
+        self.emit({"event": "done", **res, **({"help": note} if note else {})})
 
     def _cmd_choose(self, cmd: dict) -> None:
         pass  # answers are consumed by _choose; a stray one is ignored

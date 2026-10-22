@@ -64,11 +64,16 @@ vinylrip process ~/.cache/vinylrip/jobs/<id>   # traite ou reprend un job
 vinylrip cuts face_a.pcm              # affiche le plan de découpage (debug)
 vinylrip name "{album}/{piste:02d}. {titre}.flac"   # aperçu d'un gabarit
 vinylrip --json process <job>         # progression en lignes JSON (pour le plugin Kodi)
+vinylrip listen --http                # écoute servie en flux WAV sur 127.0.0.1 (pour Kodi), au lieu d'aplay
 ```
 
 Chaque session est un *job* (`job.json`, plans de coupe `cuts_X.json`) : une erreur ne supprime
-jamais rien, et `process` reprend le travail. En cas d'échec, terminez à la main : Audacity pour
-la coupe, Picard pour l'identification.
+jamais rien, et `process` reprend le travail. En cas d'échec, vinylrip explique, selon l'étape
+(enregistrement, découpage, identification, encodage, vérification, conversion, rangement), ce qui
+a été conservé et où, la commande qui reprend le job, et comment terminer à la main : réglages
+exacts pour importer les faces brutes dans Audacity (Fichier > Importer > Données brutes),
+puis étiquetage avec MusicBrainz Picard. Ces explications sont en français ou en anglais selon
+`LANG`, et figurent aussi dans les événements JSON (`help`, `resume`).
 
 ## Configuration
 
@@ -106,5 +111,8 @@ GPL-3.0-or-later. Voir `LICENSE`.
 
 `vinylrip --json session [--device hw:…] [--quality 192000:S32_LE:2] [--discs N]` ouvre une session
 d'enregistrement pilotée en JSON-lignes (commandes sur stdin, événements sur stdout) ; c'est
-l'interface utilisée par le plugin Kodi. Voir `src/vinylrip/session.py` pour le protocole.
+l'interface utilisée par le plugin Kodi et par disc-launcher. Voir `src/vinylrip/session.py` pour le
+protocole. `{"cmd": "listen", "on": true, "http": true}` sert l'écoute en flux WAV (l'événement
+`listening` en donne l'`url`) : un lecteur qui tient déjà la carte son, comme Kodi, la joue avec sa
+propre sortie audio.
 `vinylrip --json devices --qualities` liste les cartes et les qualités proposées.
