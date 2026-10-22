@@ -17,6 +17,7 @@ from .devices import (Quality, default_quality, find_card, list_capture_cards,
 from .identify import AcoustID, MusicBrainz, OnlineIdentifier
 from .job import Job, ProcessError, process
 from .pcm import PCMParams, RawPCM
+from .recovery import attention_text, help_text
 from .split import SplitConfig, analyse
 
 
@@ -135,13 +136,18 @@ def _process(job: Job, args, settings: Settings) -> int:
     try:
         res = process(job, settings, _identifier(settings), _chooser(args), None, lambda e: _emit(args, e))
     except ProcessError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        print("The recordings are untouched. You can finish by hand (Audacity for cutting, Picard for tagging) "
-              f"or fix the cause and run: vinylrip process {job.dir}", file=sys.stderr)
+        text = help_text(exc.stage, job, exc.kept, str(exc))
+        if getattr(args, "json", False):
+            print(json.dumps({"event": "error", "message": str(exc), "stage": exc.stage, "kept": job.dir,
+                              "help": text, "resume": f"vinylrip process {job.dir}"}, ensure_ascii=False), flush=True)
+        print(text, file=sys.stderr)
         return 2
     _emit(args, {"stage": "done", **{k: v for k, v in res.items() if k != "warnings"}})
     for w in res["warnings"]:
         print(f"warning: {w}", file=sys.stderr)
+    note = attention_text(res, job)
+    if note:
+        print(note, file=sys.stderr)
     return 0
 
 
@@ -176,6 +182,8 @@ def cmd_play(args, settings) -> int:
 def cmd_listen(args, settings) -> int:
     card = _resolve_card(settings, args.device)
     q = _resolve_quality(settings, card, args.quality)
+    if args.http is not None:
+        return _listen_http(args, card, q)
     rec, play = listen_pipe(card, q, settings.listen_device or None)
     try:
         input("" if args.json else "Listening. Press Enter (or close stdin) to stop… ")
@@ -184,6 +192,26 @@ def cmd_listen(args, settings) -> int:
     finally:
         rec.terminate()
         play.terminate()
+    return 0
+
+
+def _listen_http(args, card, q) -> int:
+    """Serve the turntable as an endless WAV on 127.0.0.1 until stdin closes."""
+    from .stream import LiveSource, WavServer
+    params = PCMParams(q.rate, q.channels, q.fmt)
+    cmd = ["arecord", "-q", "-D", card.hw, "-f", q.fmt, "-r", str(q.rate), "-c", str(q.channels), "-t", "raw"]
+    server = WavServer(LiveSource(cmd, params), params, args.http)
+    server.start()
+    if args.json:
+        print(json.dumps({"event": "listening", "on": True, "url": server.url, "quality": q.label}), flush=True)
+    else:
+        print(f"Streaming {q.label} at {server.url} — press Enter (or close stdin) to stop", flush=True)
+    try:
+        sys.stdin.readline()
+    finally:
+        server.stop()
+    if args.json:
+        print(json.dumps({"event": "listening", "on": False}), flush=True)
     return 0
 
 
@@ -275,6 +303,8 @@ def build_parser() -> argparse.ArgumentParser:
     ls = sub.add_parser("listen", help="listen to the turntable without recording")
     ls.add_argument("--device")
     ls.add_argument("--quality")
+    ls.add_argument("--http", type=int, nargs="?", const=0, metavar="PORT",
+                    help="serve the sound as a WAV stream on 127.0.0.1 (for Kodi…) instead of aplay")
     ls.set_defaults(fn=cmd_listen)
     return p
 

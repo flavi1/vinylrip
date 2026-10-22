@@ -21,7 +21,12 @@ from .split import Plan, SplitConfig, analyse, apply_cuts
 
 
 class ProcessError(RuntimeError):
-    pass
+    """Processing failed at `stage`; `kept` lists partial work left on disk."""
+
+    def __init__(self, message: str, stage: str | None = None, kept: list[str] | None = None):
+        super().__init__(message)
+        self.stage = stage
+        self.kept = list(kept or [])
 
 
 FACE_LETTERS = "ABCDEFGH"
@@ -125,7 +130,24 @@ def _finalize(tmp_root: str, dest_root: str, rels: list[str], multidisc: bool) -
 
 def process(job: Job, settings: Settings, identifier=None, chooser=None,
             cover_fetch=None, on_event=None) -> dict:
-    """Split, identify, align, encode, verify, convert and file one job. Returns the result."""
+    """Split, identify, align, encode, verify, convert and file one job. Returns the result.
+
+    Any failure is raised as ProcessError carrying the stage that failed and the
+    partial work kept on disk (see ``recovery.help_text``)."""
+    cur = {"stage": "split", "kept": []}
+    try:
+        return _process(job, settings, identifier, chooser, cover_fetch, on_event, cur)
+    except ProcessError as exc:
+        if exc.stage is None:
+            exc.stage = cur["stage"]
+        if not exc.kept:
+            exc.kept = list(cur["kept"])
+        raise
+    except Exception as exc:  # flac, ffmpeg, disque plein, gabarit… : toujours expliqué
+        raise ProcessError(str(exc), cur["stage"], list(cur["kept"])) from exc
+
+
+def _process(job: Job, settings: Settings, identifier, chooser, cover_fetch, on_event, cur: dict) -> dict:
     ev = on_event or (lambda e: None)
     warnings: list[str] = []
     split_cfg = SplitConfig(strong_gap_s=settings.strong_gap_s, weak_gap_s=settings.weak_gap_s,
@@ -145,6 +167,7 @@ def process(job: Job, settings: Settings, identifier=None, chooser=None,
     # -- identification -------------------------------------------------------
     release: Release | None = None
     ranked = []
+    cur["stage"] = "identify"
     if settings.identify_mode != "off" and identifier is not None:
         ev({"stage": "identify"})
         try:
@@ -228,6 +251,7 @@ def process(job: Job, settings: Settings, identifier=None, chooser=None,
         with open(cover_path, "wb") as fh:
             fh.write(cover)
 
+    cur["stage"], cur["kept"] = "encode", sorted({masters_tmp, music_tmp})
     rels, ok_all = [], True
     total = len(entries)
     sources = {}
@@ -255,10 +279,10 @@ def process(job: Job, settings: Settings, identifier=None, chooser=None,
             encode_master(src, e["start"], e["end"], out, tags, cover_path, settings.encoder)
             vr = verify_master(src, e["start"], e["end"], out, settings.encoder)
         except EncodeError as exc:
-            raise ProcessError(f"{exc} (work kept in {masters_tmp})") from exc
+            raise ProcessError(str(exc), "encode", [masters_tmp]) from exc
         if not vr.ok:
-            raise ProcessError(f"verification failed for {rel}: decoded data differs from the capture "
-                               f"(work kept in {masters_tmp}, raw files untouched)")
+            raise ProcessError(f"verification failed for {rel}: decoded data differs from the capture",
+                               "verify", [masters_tmp])
         if reduce_to:
             red = os.path.join(music_tmp, rel)
             os.makedirs(os.path.dirname(red), exist_ok=True)
@@ -267,7 +291,7 @@ def process(job: Job, settings: Settings, identifier=None, chooser=None,
                 reduce_master(out, red, reduce_to[0], reduce_to[1], settings.dither)
                 chk = check_reduced(out, red, reduce_to[0])
             except ConvertError as exc:
-                raise ProcessError(f"{exc} (masters kept in {masters_tmp})") from exc
+                raise ProcessError(str(exc), "convert", [masters_tmp]) from exc
             if not chk.ok:
                 ok_all = False
                 warnings.append(f"{rel}: reduced copy outside tolerance ({chk})")
@@ -284,6 +308,7 @@ def process(job: Job, settings: Settings, identifier=None, chooser=None,
 
     # optional archive of each whole face
     if settings.keep_full_face:
+        cur["stage"] = "archive"
         arch = os.path.join(job.dir, "archive")
         os.makedirs(arch, exist_ok=True)
         for f, pcm, _ in faces:
@@ -294,6 +319,7 @@ def process(job: Job, settings: Settings, identifier=None, chooser=None,
                 raise ProcessError(f"archive of face {f['label']} failed verification")
 
     # -- publish ------------------------------------------------------------------
+    cur["stage"], cur["kept"] = "file", sorted({masters_tmp, music_tmp})
     final_music = _finalize(music_tmp, settings.resolved_music_root(), rels, multidisc)
     final_masters = final_music
     if reduce_to:
