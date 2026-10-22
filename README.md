@@ -46,7 +46,12 @@ pour un FLAC 32 bits natif), `libchromaprint-tools` (fpcalc). Python ≥ 3.10 et
 
 ```sh
 sudo apt install alsa-utils ffmpeg flac libchromaprint-tools python3-numpy
-pip install .            # ou : PYTHONPATH=src python3 -m vinylrip …
+# Debian/Ubuntu récents (PEP 668) : pip refuse d'installer hors d'un environnement virtuel.
+sudo apt install python3-venv python3-numpy
+python3 -m venv --system-site-packages ~/.local/share/vinylrip-venv
+~/.local/share/vinylrip-venv/bin/pip install .
+sudo ln -s ~/.local/share/vinylrip-venv/bin/vinylrip /usr/local/bin/vinylrip   # facultatif
+# ou, sans rien installer : PYTHONPATH=src python3 -m vinylrip …
 ```
 
 Sans `flac` ≥ 1.4, le moteur se rabat sur ffmpeg (avec `-strict experimental`, sans lequel
