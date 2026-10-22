@@ -38,8 +38,10 @@ def wav_header(params: PCMParams) -> bytes:
 class LiveSource:
     """One process (arecord) whose output is copied to every client."""
 
-    def __init__(self, cmd: list[str], params: PCMParams, popen=subprocess.Popen, block_s: float = 0.05):
+    def __init__(self, cmd: list[str], params: PCMParams, popen=subprocess.Popen, block_s: float = 0.05, stderr=None):
         self.cmd, self.params, self._popen = cmd, params, popen
+        self.stderr = stderr if stderr is not None else subprocess.DEVNULL
+        self.ended = threading.Event()
         self.block = max(1, int(block_s * params.rate)) * params.frame_bytes
         self._clients: list[queue.Queue] = []
         self._lock = threading.Lock()
@@ -47,7 +49,7 @@ class LiveSource:
         self.error: str | None = None
 
     def start(self) -> None:
-        self._proc = self._popen(self.cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        self._proc = self._popen(self.cmd, stdout=subprocess.PIPE, stderr=self.stderr,
                                  env=dict(os.environ, LC_ALL="C"))
         threading.Thread(target=self._pump, daemon=True).start()
 
@@ -66,6 +68,7 @@ class LiveSource:
         except (OSError, ValueError) as exc:
             self.error = str(exc)
         finally:
+            self.ended.set()
             with self._lock:
                 for q in self._clients:
                     q.put(None)

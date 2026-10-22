@@ -210,13 +210,15 @@ class open_when_exists:
             self.fh.close()
 
 
-def listen_pipe(card: Card, q: Quality, device: str | None = None, popen=subprocess.Popen):
-    """`arecord … | aplay …` for listening without recording. Returns (arecord, aplay)."""
+def listen_pipe(card: Card, q: Quality, device: str | None = None, popen=subprocess.Popen,
+                rec_err=subprocess.DEVNULL, play_err=subprocess.DEVNULL):
+    """`arecord … | aplay …` for listening without recording. Returns (arecord, aplay).
+    `rec_err` / `play_err`: where their error messages go (files, to explain a failure)."""
     params = PCMParams(q.rate, q.channels, q.fmt)
-    rec = popen(["arecord", "-D", card.hw, "-f", q.fmt, "-r", str(q.rate),
+    rec = popen(["arecord", "-q", "-D", card.hw, "-f", q.fmt, "-r", str(q.rate),
                  "-c", str(q.channels), "-t", "raw"], stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL)
+                stderr=rec_err, env=dict(os.environ, LC_ALL="C"))
     play = popen(build_aplay_cmd(params, device), stdin=rec.stdout,
-                 stderr=subprocess.DEVNULL)
+                 stderr=play_err, env=dict(os.environ, LC_ALL="C"))
     rec.stdout.close()
     return rec, play

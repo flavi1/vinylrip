@@ -184,32 +184,92 @@ def cmd_listen(args, settings) -> int:
     q = _resolve_quality(settings, card, args.quality)
     if args.http is not None:
         return _listen_http(args, card, q)
-    rec, play = listen_pipe(card, q, settings.listen_device or None)
-    try:
-        input("" if args.json else "Listening. Press Enter (or close stdin) to stop… ")
-    except EOFError:
-        pass
-    finally:
-        rec.terminate()
-        play.terminate()
+    import tempfile
+    with tempfile.TemporaryFile() as rerr, tempfile.TemporaryFile() as perr:
+        rec, play = listen_pipe(card, q, settings.listen_device or None, rec_err=rerr, play_err=perr)
+        if not args.json:
+            print("Listening. Press Enter (or close stdin) to stop… ", flush=True)
+        try:
+            dead = _wait_stdin_or_exit([("arecord", rec), ("aplay", play)])
+        finally:
+            for p in (rec, play):
+                if p.poll() is None:
+                    p.terminate()
+        if dead:
+            return _listen_failed(args, dead, {"arecord": rerr, "aplay": perr}[dead[0]], card)
     return 0
+
+
+def _wait_stdin_or_exit(procs, poll_s: float = 0.2):
+    """Waits for Enter / end of stdin, or for one of the processes to stop by
+    itself. Returns (name, return code) of the process that stopped, or None."""
+    import threading
+    done = threading.Event()
+
+    def reader():
+        try:
+            sys.stdin.readline()
+        except (OSError, ValueError):
+            pass
+        done.set()
+    threading.Thread(target=reader, daemon=True).start()
+    while not done.wait(poll_s):
+        for name, p in procs:
+            code = p.poll() if hasattr(p, "poll") else None
+            if code is not None:
+                return name, code
+            if hasattr(p, "is_set") and p.is_set():
+                return name, None
+    return None
+
+
+def _listen_failed(args, dead, err_file, card) -> int:
+    """The listening stopped by itself: say why (busy card, PipeWire…)."""
+    name, code = dead
+    detail = ""
+    if err_file is not None:
+        try:
+            err_file.seek(0)
+            detail = err_file.read().decode("utf-8", "replace").strip()
+        except (OSError, ValueError):
+            pass
+    from .recovery import french
+    last = detail.splitlines()[-1] if detail else ""
+    if french():
+        message = f"écoute interrompue : {name} s'est arrêté (code {code})" + (f" : {last}" if last else "")
+        hint = (f"la carte de capture {card.hw} est peut-être occupée (PipeWire/PulseAudio, autre programme) "
+                "ou pas encore prête ; réessayez dans quelques secondes")
+    else:
+        message = f"listening stopped: {name} exited (code {code})" + (f": {last}" if last else "")
+        hint = (f"the capture card {card.hw} may be busy (PipeWire/PulseAudio, another program) "
+                "or not ready yet; try again in a few seconds")
+    if getattr(args, "json", False):
+        print(json.dumps({"event": "error", "message": message, "hint": hint, "detail": detail}, ensure_ascii=False), flush=True)
+    print(f"error: {message}\n{hint}", file=sys.stderr)
+    return 3
 
 
 def _listen_http(args, card, q) -> int:
     """Serve the turntable as an endless WAV on 127.0.0.1 until stdin closes."""
     from .stream import LiveSource, WavServer
     params = PCMParams(q.rate, q.channels, q.fmt)
+    import tempfile
     cmd = ["arecord", "-q", "-D", card.hw, "-f", q.fmt, "-r", str(q.rate), "-c", str(q.channels), "-t", "raw"]
-    server = WavServer(LiveSource(cmd, params), params, args.http)
+    err = tempfile.TemporaryFile()
+    source = LiveSource(cmd, params, stderr=err)
+    server = WavServer(source, params, args.http)
     server.start()
     if args.json:
         print(json.dumps({"event": "listening", "on": True, "url": server.url, "quality": q.label}), flush=True)
     else:
         print(f"Streaming {q.label} at {server.url} — press Enter (or close stdin) to stop", flush=True)
     try:
-        sys.stdin.readline()
+        dead = _wait_stdin_or_exit([("arecord", source.ended)])
     finally:
         server.stop()
+    if dead:
+        code = source._proc.poll() if source._proc else None
+        return _listen_failed(args, ("arecord", code), err, card)
     if args.json:
         print(json.dumps({"event": "listening", "on": False}), flush=True)
     return 0
